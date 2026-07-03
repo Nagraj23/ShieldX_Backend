@@ -1,242 +1,349 @@
-# Shield-X Backend
 
-Shield-X Backend is a multi-service backend composed of:
-- **Spring Boot (Java)** service under `shieldx/`
-- **Authentication (Node/Express)** service under `Authentication/`
-- **Location & SOS (FastAPI)** service under `Location_S/`
-- **Notification Delivery (FastAPI + Redis Queue Worker)** service under `notofication/`
-- **AI services** under `AI/`
+# 🛡️ ShieldX Backend Ecosystem
 
-This README describes what each service does, how it’s wired internally, and how to run it.
+<p align="center">
+  <img src="https://img.shields.io/badge/Spring_Boot-6DB33F?style=for-the-badge&logo=springboot&logoColor=white"/>
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"/>
+  <img src="https://img.shields.io/badge/MongoDB-47A248?style=for-the-badge&logo=mongodb&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Twilio-F22F46?style=for-the-badge&logo=twilio&logoColor=white"/>
+</p>
 
-> Note: Some folders in this repo are named with typos (e.g., `notofication`). The code references those exact folder paths.
+<p align="center">
+  <b>Emergency Response, Location Tracking & Safety Intelligence Platform</b>
+</p>
 
 ---
 
-## 1) Authentication Service (`Authentication/`)
+# 🎯 Overview
+
+ShieldX Backend is a microservice-based safety platform powering:
+
+🔐 Authentication & User Management
+
+📍 Real-Time Location Tracking
+
+🚨 SOS Emergency Response System
+
+📲 Push Notification Delivery
+
+📨 SMS Fallback Communication
+
+🤖 AI Safety Services
+
+⚡ Distributed Event Processing
+
+---
+
+# 🏗️ System Architecture
+
+```text
+                        📱 Mobile App
+                               │
+                               ▼
+
+                    ┌───────────────────┐
+                    │ Authentication API│
+                    │     Node.js       │
+                    └─────────┬─────────┘
+                              │
+                              ▼
+
+                   🔐 JWT Authentication
+
+                              │
+       ┌──────────────────────┼──────────────────────┐
+       ▼                      ▼                      ▼
+
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│ SOS Service  │      │ Notification │      │ AI Services  │
+│   FastAPI    │      │   FastAPI    │      │ Multi-Agent  │
+└──────┬───────┘      └──────┬───────┘      └──────┬───────┘
+       │                     │                     │
+       ▼                     ▼                     ▼
+
+📍 Location DB       🔴 Redis Queue         🤖 AI Engines
+🚨 SOS History       📲 FCM Push            🗺️ Route AI
+                     📨 Twilio SMS          💬 Chatbot
+
+       └──────────────┬────────────────────┘
+                      ▼
+
+                 🍃 MongoDB
+```
+
+---
+
+# 🧩 Services
+
+## 🔐 Authentication Service
 
 ### Purpose
-Handles:
-- user registration/login with **OTP verification** (Twilio Verify)
-- JWT access tokens + refresh tokens (refresh token stored in Mongo and also set as an HTTP-only cookie)
-- forgot-password flow using **OTP via Gmail** (nodemailer)
-- emergency contact and emergency address management
 
-### Entry point
-- `Authentication/index.js`
+Handles user identity and security.
 
-### Main APIs (routes)
-From `Authentication/routes/authRoutes.js`:
-- `POST /auth/register` → sends phone OTP via Twilio Verify
-- `POST /auth/login` → verifies bcrypt password, issues tokens
-- `POST /auth/resend-otp` → resends phone OTP
-- `POST /auth/verify-otp` → verifies phone OTP and creates user
-- `GET /auth/user/me` → protected, returns current user data
-- `PATCH /auth/user-update` → protected, updates user profile fields
+### Features
 
-Emergency APIs from `Authentication/routes/EmergencyRoutes.js` (protected by `VerifyToken` + `Checkrefresh`):
-- `POST /emergency/contact`
-- `GET /emergency/contact`
-- `PUT /emergency/contact`
-- `POST /emergency/address` (Google Geocoding)
-- `GET /emergency/address`
-- `PUT /emergency/address`
+* 📱 Phone OTP Verification
+* 🔑 JWT Authentication
+* ♻️ Refresh Token Rotation
+* 👤 User Profile Management
+* 🔒 Password Recovery
+* 🤝 Emergency Contact Management
+* 📍 Emergency Address Storage
 
-Forgot password routes (also in `authRoutes.js`):
-- `POST /forgot/send-otp`
-- `POST /forgot/verify-otp`
-- `POST /forgot/reset-password`
+### Technology
 
-### Important internal implementation details
-- MongoDB connection is done in `Authentication/config/db.js` using `process.env.MONGO_URI` (with a default Atlas URI fallback).
-- OTP verification for registration uses **Twilio Verify** (`TWILIO_VERIFY_SID`). Pending registrations are stored in memory (`pendingUsers` Map), meaning OTP is not durable across restarts.
-- Forgot-password OTP uses an in-memory `otpStore` Map.
-
-### Environment variables (inferred from code)
-- `MONGO_URI`
-- `TWILIO_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_VERIFY_SID`
-- `TOKEN_SECRET` (optional fallback exists)
-- `REFRESH_TOKEN_SECRET`
-- `API_KEY` (Google Maps Geocoding)
-- `NODE_ENV` (sets cookie `secure`)
+| Component      | Technology    |
+| -------------- | ------------- |
+| Runtime        | Node.js       |
+| Framework      | Express       |
+| Database       | MongoDB       |
+| Authentication | JWT           |
+| OTP Provider   | Twilio Verify |
+| Email Service  | Nodemailer    |
 
 ---
 
-## 2) Location & SOS Service (`Location_S/`)
+## 📍 Location & SOS Service
 
 ### Purpose
-A FastAPI service that:
-- accepts location updates
-- saves location in MongoDB
-- sends notifications to emergency contacts
-- triggers SOS flow with:
-  - alert sound
-  - SOS message with Google Maps link
-  - SOS history persistence
 
-### Entry point
-- `Location_S/app/main.py`
+Manages real-time location sharing and emergency alerts.
 
-### API wiring
-`main.py` includes:
-- `routes/sos_routes.py` under prefix: `/api`
-- `routes/location_routes.py` under prefix: `/api`
+### Features
 
-### Core behavior (from controllers)
-#### Location sharing (`Location_S/controllers/location.py`)
-- Generates a Google Maps link: `https://www.google.com/maps?q={lat},{lon}`
-- Normal message format: `📍 {username}'s location: {link}`
-- Emergency message format: `🚨 EMERGENCY: {username} needs help! Location: {link}`
-- Sends notifications via `utils.notifier.send_notification(...)`
-- Uses online/offline checks via `utils.network.is_online()`
+* 📡 GPS Location Updates
+* 🌎 Google Maps Link Generation
+* 🚨 Emergency SOS Alerts
+* 🔊 Alert Sound Triggering
+* 📜 SOS History Persistence
+* ⚡ Background Task Processing
 
-#### SOS (`Location_S/controllers/sos_controller.py`)
-- Plays alert sound
-- Sends SOS notifications to contacts
-- Persists SOS history to `sos_history_collection` using background task
 
----
-
-## 3) Notification Delivery Service (`notofication/`)
+## 📲 Notification Delivery Service
 
 ### Purpose
-A high-reliability async notification pipeline that provides:
-- **durability** (write-ahead log in Mongo)
-- **timeliness** (returns immediately after enqueue)
-- **retries** using `rq` (Redis Queue)
-- **presence-based delivery** using Redis heartbeats
-- delivery engines:
-  - **FCM PUSH** when recipient is online
-  - **Twilio SMS fallback** when PUSH cannot be delivered
 
-### Entry point
-- `notofication/main.py`
+Reliable notification delivery with retries and fallback channels.
 
-### Routers mounted by `main.py`
-- Alert ingest (enqueue + WAL): `routes/alert_routes.py` at `/api/v1/alert`
-- Recipient status/heartbeat endpoints: `routes/notification_routes.py` at `/api/v1/status`
+### Features
 
-### Alert ingest (canonical API)
-From `notofication/routes/alert_routes.py`:
-- `POST /api/v1/alert/send`
-  1. Persists the alert using `db.insert_initial_alert(...)`
-  2. Enqueues a job with RQ using `enqueue_delivery_task(notification_id)`
-  3. Returns immediately:
-     - `{ status: "delivery_queued", notification_id: "..." }`
+* ⚡ Async Notification Queue
+* 🔄 Retry Mechanism
+* 📲 FCM Push Notifications
+* 📨 SMS Fallback Delivery
+* 🔴 Redis Presence Tracking
+* 📜 Write-Ahead Logging (WAL)
+* 📊 Delivery Status Tracking
 
-### RQ worker wiring
-From `notofication/worker_setup.py`:
-- Redis is configured using:
-  - `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`
-- Queue name:
-  - `high_priority_alerts`
-- Worker processes jobs by running:
-  - `services.delivery.execute_delivery(notification_id)`
+### Delivery Pipeline
 
-### Delivery engine logic
-From `notofication/services/delivery.py`:
-- Loads alert from Mongo (`get_alert_for_delivery`)
-- Fetches recipient metadata (parents) using `get_parents_by_child(child_id)`
-- For each recipient:
-  - checks presence and retrieves FCM token via `services.redis_presence.get_parent_reachability`
-  - if online → try FCM PUSH (`services.fcm.send_fcm_notification`)
-  - otherwise / fallback → try SMS (`services.twilio.send_sms`)
-- Writes delivery attempts into `status_history` and updates notification fields:
-  - `delivered`, `delivered_by`, `final_status`
-- Retry behavior:
-  - uses `rq.exceptions.Retry` for transient failures (not permanent 400-style errors)
+```text
+Alert Received
+      │
+      ▼
 
-### Presence heartbeat (Redis)
-From `notofication/services/redis_presence.py`:
-- Presence key format:
-  - `user:{user_id}:presence`
-- Online threshold:
-  - `REDIS_PRESENCE_TTL_SECONDS = 45`
-- `update_user_status(...)` stores:
-  - `last_seen_ts`
-  - `is_online`
-  - `fcm_token` (when available)
+📝 Write-Ahead Log
+      │
+      ▼
 
-### MongoDB collections & WAL
-From `notofication/db.py`:
-- Uses MongoDB with async Motor client.
-- Database name:
-  - `DB_NAME` (default: `notification_service`)
-- Writes notification documents into a `notifications` collection.
+🔴 Redis Queue
+      │
+      ▼
 
-### Environment variables (inferred from code)
-- `MONGO_URI`
-- `DB_NAME`
-- `REDIS_HOST`
-- `REDIS_PORT`
-- `REDIS_PASSWORD`
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_PHONE_NUMBER`
+⚙️ RQ Worker
+      │
+      ▼
+
+Is User Online?
+      │
+ ┌────┴─────┐
+ │          │
+ ▼          ▼
+
+FCM Push   SMS Fallback
+```
 
 ---
 
-## 4) Spring Boot Service (`shieldx/`)
+## ☕ Spring Boot Service
 
 ### Purpose
-A Java Spring Boot backend containing JWT security, OTP storage, and controllers for auth and parent/child connections.
 
-### Key entry point
-- `shieldx/src/main/java/com/project/shieldx/ShieldxApplication.java`
+Java-based backend responsible for security and relationship management.
 
-### Notable dependencies (from `pom.xml`)
-- `spring-boot-starter-web`
-- `spring-boot-starter-security`
-- `spring-boot-starter-data-jpa`
-- `spring-boot-starter-data-mongodb`
-- `spring-boot-starter-mail`
-- JWT libraries (`jjwt`)
+### Features
 
----
+* 🔑 JWT Security
+* 👨‍👩‍👧 Parent-Child Connections
+* 📨 OTP Storage
+* 📧 Mail Integration
+* 🛡️ Spring Security
 
-## 5) AI Services (`AI/`)
+### Technology
 
-### Purpose
-Multiple AI/auxiliary microservices exist under `AI/*`, including:
-- `AI/Chatbot_S/` (Python)
-- `AI/Gateway_S/` (Node)
-- `AI/Location_S/` (Python)
-- `AI/Perodic_S/` (Python)
-- `AI/Route_S/` (Python)
-
-The repo contains full subproject directories, each with its own code layout and dependencies.
+* Spring Boot
+* Spring Security
+* JPA
+* MongoDB
+* JWT
+* Java Mail
 
 ---
 
-## How to run (quick references)
+## 🤖 AI Services
 
-### Authentication (Node/Express)
-From `Authentication/`:
-- install deps: `npm install`
-- run: `npm start`
+Multiple intelligent services are available.
 
-### Location & SOS (FastAPI)
-From `Location_S/`:
-- install deps: `pip install -r requirements.txt`
-- run: `uvicorn app.main:app --reload` (port in code: `8002` when using `python main.py`)
+### Available Modules
 
-### Notification Delivery (FastAPI + RQ worker)
-From `notofication/`:
-- API server:
-  - `uvicorn main:app --reload` (port comes from your uvicorn command)
-- Worker (separate terminal):
-  - `rq worker high_priority_alerts`
-
-> The worker uses the same Redis settings as the API (via env vars).
+| Service       | Purpose                  |
+| ------------- | ------------------------ |
+| 💬 Chatbot_S  | Conversational Assistant |
+| 🌎 Location_S | AI Location Processing   |
+| 🗺️ Route_S   | Route Intelligence       |
+| ⏰ Perodic_S   | Scheduled AI Tasks       |
+| 🚪 Gateway_S  | API Gateway              |
 
 ---
 
-## Notes / assumptions made while documenting
-- This README is derived from inspecting the code that is present and readable in the repo structure.
-- `Authentication` and `notofication` both include in-memory OTP storage in their controllers/flows (OTP durability across restarts is therefore not guaranteed).
+# 🗄️ Data Architecture
+
+| Storage    | Purpose                        |
+| ---------- | ------------------------------ |
+| 🍃 MongoDB | User Data, Alerts, SOS History |
+| 🔴 Redis   | Queueing & Presence Tracking   |
+| 📲 FCM     | Push Notification Delivery     |
+| 📨 Twilio  | SMS Fallback Delivery          |
 
 ---
 
-If you want, the next step can be to add per-service `env.example` files and exact run commands including required ports, but this README intentionally avoids duplicating configuration content that already exists in-code.
+```
+
+---
+
+# ⚙️ Environment Variables
+
+## Authentication
+
+```env
+MONGO_URI=
+TWILIO_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_VERIFY_SID=
+TOKEN_SECRET=
+REFRESH_TOKEN_SECRET=
+API_KEY=
+```
+
+## Notification Service
+
+```env
+MONGO_URI=
+DB_NAME=
+REDIS_HOST=
+REDIS_PORT=
+REDIS_PASSWORD=
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PHONE_NUMBER=
+```
+
+---
+
+# 🚀 Quick Start
+
+## Authentication Service
+
+```bash
+cd Authentication
+npm install
+npm start
+```
+
+## Location Service
+
+```bash
+cd Location_S
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+## Notification Service
+
+### API Server
+
+```bash
+cd notofication
+uvicorn main:app --reload
+```
+
+### Worker
+
+```bash
+rq worker high_priority_alerts
+```
+
+---
+
+# 🌟 Highlights
+
+✅ Microservice Architecture
+
+✅ JWT Authentication
+
+✅ Real-Time Location Tracking
+
+✅ SOS Emergency System
+
+✅ Push Notifications
+
+✅ SMS Fallback Delivery
+
+✅ Redis Queue Processing
+
+✅ Twilio Integration
+
+✅ FastAPI Services
+
+✅ Spring Security
+
+✅ AI-Powered Safety Features
+
+---
+
+# 📈 Future Enhancements
+
+* 🛰️ Live Tracking Dashboard
+* 🤖 AI Risk Detection
+* 🚔 Nearby Emergency Services
+* 🎙️ Voice Activated SOS
+* 📊 Analytics Platform
+* 🌍 Multi-Language Support
+
+---
+
+# 📌 Project Status
+
+🟢 Active Development
+
+✅ Authentication Service
+
+✅ Location Tracking
+
+✅ SOS Alerts
+
+✅ Notification Pipeline
+
+✅ AI Services
+
+🚀 Production Deployment Ready
+
+---
+
+<p align="center">
+Built with ❤️ to improve personal safety through technology.
+</p>
+
