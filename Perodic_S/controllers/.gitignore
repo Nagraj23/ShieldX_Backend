@@ -1,0 +1,20 @@
+# Node modules
+node_modules/
+
+# Logs
+*.log
+
+# Environment files
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Coverage reports
+coverage/
+*.cover
+
+# Build directories
+dist/
+build/

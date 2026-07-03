@@ -1,0 +1,19 @@
+
+fastapi[all]>=0.110.0         # Core high-performance web framework (includes Pydantic v2)
+uvicorn[standard]>=0.28.0     # Production-grade ASGI server implementation
+
+# --- Isolated Storage (Notification Layer) ---
+motor>=3.3.0                  # Non-blocking asynchronous MongoDB driver
+bson>=0.5.10                  # Efficient native handling for binary BSON ObjectIds
+
+# --- Configuration & Environment State Management ---
+python-dotenv>=1.0.1          # System parsing framework for local hidden configuration parameters
+pydantic-settings>=2.2.1      # Mandatory Pydantic v2 extension for isolated BaseSettings loading
+
+# --- Asynchronous Performance Queueing & Live Presence ---
+redis>=5.0.3                  # Core driver supporting asynchronous real-time client interactions
+rq>=1.16.0                    # Robust memory worker runtime cluster tracking logic
+
+# --- Cloud Gateway Integration (Tier-2 & Tier-3 Fallbacks) ---
+firebase-admin>=6.5.0         # Low-latency high-priority mobile device data pushes (FCM v1)
+twilio>=9.0.0                 # Cellular telephony text framework fallback safeguards

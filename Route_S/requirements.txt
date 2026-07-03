@@ -1,0 +1,14 @@
+fastapi
+pydantic
+apscheduler
+motor
+pymongo
+python-dotenv
+twilio
+firebase-admin
+httpx
+bcrypt
+playsound
+SpeechRecognition
+numpy
+requests

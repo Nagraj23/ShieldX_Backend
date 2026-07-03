@@ -1,0 +1,4 @@
+Notification/services/google-service.json
+.env
+*.log
+__pycache__/

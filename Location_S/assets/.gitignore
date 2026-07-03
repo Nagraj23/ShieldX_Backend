@@ -1,0 +1,8 @@
+# Ignore media files to reduce repo size
+*.mp3
+*.wav
+*.mp4
+*.avi
+*.mov
+*.flac
+*.m4a
