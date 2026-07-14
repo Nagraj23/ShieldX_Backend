@@ -1,62 +1,208 @@
 import logging
-import json
-from datetime import datetime, timezone
+
 from rq.exceptions import Retry
+
 from config import settings
-from db import get_alert_for_delivery, update_notification_status, get_parents_by_child
+from db import (
+    get_notification,
+    update_notification_status,
+)
 from services.redis_pubsub import RedisPubSubService
 from fcm import FallbackNotificationService
-from models.notification_model import Parent, DeliveryAttempt
+from models.notification_model import DeliveryAttempt
 
 logger = logging.getLogger("ShieldX.Worker")
 
+
 async def execute_delivery(notification_id: str):
-    raw_doc = await get_alert_for_delivery(notification_id)
-    if not raw_doc: return {"status": "NOT_FOUND"}
 
-    child_id = raw_doc.get("child_id")
-    payload_snapshot = raw_doc.get("payload_snapshot", {})
-    message = payload_snapshot.get("message", "ShieldX Safety Alert")
-    recipient_ids = raw_doc.get("recipient_parent_ids", [])
-    
-    history = raw_doc.get("status_history", []) or []
-    current_attempt_number = len(history) + 1
+    notification = await get_notification(notification_id)
 
-    parents_raw = await get_parents_by_child(child_id)
-    parents = {str(p.get("_id")): Parent.model_validate(p) for p in parents_raw if p.get("_id")}
+    if not notification:
+        return {"status": "NOT_FOUND"}
 
-    for rec_id in recipient_ids:
-        parent = parents.get(rec_id)
-        if not parent: continue
+    history = notification.get("status_history", [])
 
-        # Tier 1: Try Primary Redis Pub/Sub Memory Broker Path
-        delivered = await RedisPubSubService.publish_to_parent(rec_id, payload_snapshot)
-        if delivered:
-            attempt = DeliveryAttempt(channel="REDIS_PUBSUB", result="SUCCESS", attempt_number=current_attempt_number)
-            await update_notification_status(notification_id, {"delivered": True, "delivered_by": "REDIS_PUBSUB", "final_status": "COMPLETED"}, attempt.model_dump())
-            return {"status": "SUCCESS", "channel": "REDIS_PUBSUB"}
+    attempt_number = len(history) + 1
 
-        # Tier 2: Fallback to FCM Data Push Notification
-        reach = await RedisPubSubService.get_parent_reachability(rec_id)
-        if reach.get("fcm_token"):
-            fcm_res = await FallbackNotificationService.dispatch_fcm_push(reach["fcm_token"], "ShieldX Emergency", message, payload_snapshot)
-            if fcm_res["success"]:
-                attempt = DeliveryAttempt(channel="FCM_PUSH", result="SUCCESS", attempt_number=current_attempt_number, provider_response=fcm_res)
-                await update_notification_status(notification_id, {"delivered": True, "delivered_by": "FCM_PUSH", "final_status": "COMPLETED"}, attempt.model_dump())
-                return {"status": "SUCCESS", "channel": "FCM_PUSH"}
+    recipients = notification.get("recipients", [])
 
-        # Tier 3: Fallback to Cellular Network Twilio SMS
-        if parent.phone:
-            sms_res = await FallbackNotificationService.dispatch_twilio_sms(parent.phone, message)
-            if sms_res["success"]:
-                attempt = DeliveryAttempt(channel="TWILIO_SMS", result="SUCCESS", attempt_number=current_attempt_number, provider_response=sms_res)
-                await update_notification_status(notification_id, {"delivered": True, "delivered_by": "TWILIO_SMS", "final_status": "COMPLETED"}, attempt.model_dump())
-                return {"status": "SUCCESS", "channel": "TWILIO_SMS"}
+    payload = notification.get("payload", {})
 
-    # Handle retry allocations on network drop exceptions
-    if current_attempt_number < settings.MAX_DELIVERY_ATTEMPTS:
-        delay = settings.INITIAL_RETRY_DELAY_SECONDS * (2 ** (current_attempt_number - 1))
+    notification_data = notification.get("notification", {})
+
+    title = notification_data.get("title", "ShieldX Notification")
+
+    body = notification_data.get("body", "")
+
+    overall_success = True
+
+    delivered_channel = None
+
+    for recipient in recipients:
+
+        user_id = recipient.get("id")
+
+        if not user_id:
+            continue
+
+        recipient_success = False
+
+        # ----------------------------------------------------
+        # Tier 1 : Redis PubSub
+        # ----------------------------------------------------
+
+        if await RedisPubSubService.publish_to_user(
+            user_id,
+            payload
+        ):
+
+            recipient_success = True
+
+            delivered_channel = "REDIS_PUBSUB"
+
+            attempt = DeliveryAttempt(
+                channel="REDIS_PUBSUB",
+                result="SUCCESS",
+                attempt_number=attempt_number
+            )
+
+            await update_notification_status(
+                notification_id,
+                {},
+                attempt.model_dump()
+            )
+
+        else:
+
+            # ------------------------------------------------
+            # Tier 2 : Firebase Push
+            # ------------------------------------------------
+
+            reachability = await RedisPubSubService.get_user_reachability(
+                user_id
+            )
+
+            token = reachability.get("fcm_token")
+
+            if token:
+
+                result = await FallbackNotificationService.dispatch_fcm_push(
+                    token,
+                    title,
+                    body,
+                    payload
+                )
+
+                if result["success"]:
+
+                    recipient_success = True
+
+                    delivered_channel = "FCM_PUSH"
+
+                    attempt = DeliveryAttempt(
+                        channel="FCM_PUSH",
+                        result="SUCCESS",
+                        attempt_number=attempt_number,
+                        provider_response=result
+                    )
+
+                    await update_notification_status(
+                        notification_id,
+                        {},
+                        attempt.model_dump()
+                    )
+
+            # ------------------------------------------------
+            # Tier 3 : SMS
+            # ------------------------------------------------
+
+            if not recipient_success:
+
+                phone = recipient.get("phone")
+
+                if phone:
+
+                    result = await FallbackNotificationService.dispatch_twilio_sms(
+                        phone,
+                        body
+                    )
+
+                    if result["success"]:
+
+                        recipient_success = True
+
+                        delivered_channel = "TWILIO_SMS"
+
+                        attempt = DeliveryAttempt(
+                            channel="TWILIO_SMS",
+                            result="SUCCESS",
+                            attempt_number=attempt_number,
+                            provider_response=result
+                        )
+
+                        await update_notification_status(
+                            notification_id,
+                            {},
+                            attempt.model_dump()
+                        )
+
+        if not recipient_success:
+
+            overall_success = False
+
+            attempt = DeliveryAttempt(
+                channel="REDIS_PUBSUB",
+                result="FAILED_TRANSIENT",
+                attempt_number=attempt_number
+            )
+
+            await update_notification_status(
+                notification_id,
+                {},
+                attempt.model_dump()
+            )
+
+    # --------------------------------------------------------
+    # Final Status
+    # --------------------------------------------------------
+
+    if overall_success:
+
+        await update_notification_status(
+            notification_id,
+            {
+                "delivered": True,
+                "delivered_via": delivered_channel,
+                "final_status": "COMPLETED"
+            }
+        )
+
+        return {
+            "status": "SUCCESS"
+        }
+
+    # --------------------------------------------------------
+    # Retry
+    # --------------------------------------------------------
+
+    if attempt_number < settings.MAX_DELIVERY_ATTEMPTS:
+
+        delay = (
+            settings.INITIAL_RETRY_DELAY_SECONDS
+            * (2 ** (attempt_number - 1))
+        )
+
         raise Retry(delay=delay)
-    
-    await update_notification_status(notification_id, {"delivered": False, "final_status": "FAILED"})
-    return {"status": "FAILED"}
+
+    await update_notification_status(
+        notification_id,
+        {
+            "delivered": False,
+            "final_status": "FAILED"
+        }
+    )
+
+    return {
+        "status": "FAILED"
+    }

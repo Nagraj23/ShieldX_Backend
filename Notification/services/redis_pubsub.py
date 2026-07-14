@@ -1,41 +1,129 @@
 import json
+import time
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 import redis.asyncio as aioredis
+
 from config import settings
 
-logger = logging.getLogger("ShieldX.RedisPubSub")
-redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+logger = logging.getLogger("ShieldX.Redis")
+
+redis_client = aioredis.from_url(
+    settings.redis_url,
+    decode_responses=True
+)
+
 
 class RedisPubSubService:
-    @staticmethod
-    def get_channel_name(parent_id: str) -> str:
-        return f"channel:parent:{parent_id}"
+
+    PRESENCE_TTL_SECONDS = 45
 
     @staticmethod
-    async def track_heartbeat(parent_id: str, fcm_token: Optional[str] = None) -> None:
-        key = f"user:{parent_id}:presence"
-        mapping = {"last_seen_ts": str(aioredis.Timestamp.now() / 1000.0), "is_online": "true"}
-        if fcm_token: mapping["fcm_token"] = fcm_token
-        async with redis_client.pipeline(transaction=True) as pipe:
-            await pipe.hset(key, mapping=mapping)
-            await pipe.expire(key, 45)
-            await pipe.execute()
+    def get_user_channel(user_id: str) -> str:
+        return f"notification:user:{user_id}"
 
     @staticmethod
-    async def get_parent_reachability(parent_id: str) -> Dict[str, Any]:
-        key = f"user:{parent_id}:presence"
-        data = await redis_client.hgetall(key)
-        if not data or data.get("is_online") == "false":
-            return {"is_online": False, "fcm_token": None}
-        return {"is_online": True, "fcm_token": data.get("fcm_token")}
+    def get_presence_key(user_id: str) -> str:
+        return f"user:{user_id}:presence"
 
     @staticmethod
-    async def publish_to_parent(parent_id: str, payload: Dict[str, Any]) -> bool:
-        channel = RedisPubSubService.get_channel_name(parent_id)
-        active_channels = await redis_client.pubsub_numsub(channel)
-        listener_count = active_channels[0][1] if active_channels else 0
-        if listener_count > 0:
-            await redis_client.publish(channel, json.dumps(payload, default=str))
+    async def track_heartbeat(
+        user_id: str,
+        fcm_token: Optional[str] = None
+    ) -> None:
+
+        try:
+            key = RedisPubSubService.get_presence_key(user_id)
+
+            mapping = {
+                "last_seen_ts": str(time.time()),
+                "is_online": "true"
+            }
+
+            if fcm_token:
+                mapping["fcm_token"] = fcm_token
+
+            async with redis_client.pipeline(transaction=True) as pipe:
+                await pipe.hset(key, mapping=mapping)
+                await pipe.expire(
+                    key,
+                    RedisPubSubService.PRESENCE_TTL_SECONDS
+                )
+                await pipe.execute()
+
+        except Exception as e:
+            logger.error(
+                f"Heartbeat tracking failed for user {user_id}: {e}"
+            )
+
+    @staticmethod
+    async def get_user_reachability(
+        user_id: str
+    ) -> Dict[str, Any]:
+
+        try:
+            key = RedisPubSubService.get_presence_key(user_id)
+
+            data = await redis_client.hgetall(key)
+
+            if not data:
+                return {
+                    "is_online": False,
+                    "fcm_token": None
+                }
+
+            return {
+                "is_online": data.get("is_online") == "true",
+                "fcm_token": data.get("fcm_token")
+            }
+
+        except Exception as e:
+            logger.error(
+                f"Presence lookup failed for user {user_id}: {e}"
+            )
+
+            return {
+                "is_online": False,
+                "fcm_token": None
+            }
+
+    @staticmethod
+    async def publish_to_user(
+        user_id: str,
+        payload: Dict[str, Any]
+    ) -> bool:
+
+        try:
+            channel = RedisPubSubService.get_user_channel(user_id)
+
+            subscribers = await redis_client.pubsub_numsub(channel)
+
+            listener_count = (
+                subscribers[0][1]
+                if subscribers
+                else 0
+            )
+
+            if listener_count <= 0:
+                logger.info(
+                    f"No active subscribers for user {user_id}"
+                )
+                return False
+
+            await redis_client.publish(
+                channel,
+                json.dumps(payload, default=str)
+            )
+
+            logger.info(
+                f"Notification published to user {user_id}"
+            )
+
             return True
-        return False
+
+        except Exception as e:
+            logger.error(
+                f"Redis publish failed for user {user_id}: {e}"
+            )
+            return False
