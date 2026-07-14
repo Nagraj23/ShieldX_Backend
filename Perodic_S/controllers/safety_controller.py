@@ -19,6 +19,9 @@ class VerifyCodeDTO(BaseModel):
     child_id: str
     plain_code: str
 
+class StopSessionDTO(BaseModel):
+    child_id: str
+
 # --- HTTP Route Endpoints ---
 
 @router.post("/start")
@@ -55,4 +58,35 @@ async def verify_challenge_entry(payload: VerifyCodeDTO):
     if result.get("status") == "ERROR":
         raise HTTPException(status_code=404, detail=result.get("message"))
         
+    return result
+
+@router.get("/status/{child_id}")
+async def get_safety_session_status(child_id: str):
+    """
+    Returns the current status of an active periodic safety session.
+    """
+    result = await safety_service.get_session_status(child_id)
+
+    if result.get("status") == "NOT_FOUND":
+        raise HTTPException(
+            status_code=404,
+            detail=result.get("message")
+        )
+
+    return result
+@router.post("/stop")
+async def stop_tracking_loop(payload: StopSessionDTO):
+    """
+    Stops an active periodic safety session.
+    """
+    result = await safety_service.stop_safety_session(
+        child_id=payload.child_id
+    )
+
+    if result.get("status") == "NOT_FOUND":
+        raise HTTPException(
+            status_code=404,
+            detail=result.get("message")
+        )
+
     return result

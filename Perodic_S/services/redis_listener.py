@@ -43,23 +43,63 @@ async def listen_to_timer_expirations():
                         parent_ids = session_data.get("parent_contacts", [])
                         
                         # Build the clear payload containing parent IDs for the Notification Service to handle
-                        alert_payload = {
-                            "type": "EMERGENCY_SOS",
-                            "feature": "PERIODIC_SAFETY",
-                            "child_id": child_id,
-                            "reason": "TIMEOUT_EXPIRED",
-                            "target_parents": parent_ids,  # Array of parent UUIDs read directly from cache
-                            "title": "🔴 SHIELDX EMERGENCY ALERT",
-                            "message": "ShieldX System Alert: Your child failed to check in within the safety window."
-                        }
+                        await safety_service.send_checkin_request(
+                        child_id=child_id,
+                        parent_contacts=parent_ids
+                    )
+                        response_timer_key = f"periodic:response:{child_id}"
                         
+                        retry_key = f"periodic:retry:{child_id}"
+
+                        await redis_client.set(retry_key, 0)
+
+                        await redis_client.setex(
+                            response_timer_key,
+                            30,
+                            "WAITING_FOR_RESPONSE"
+                        )
+
                         # Drop the payload directly into the decoupled notification broker pipe
                         channel_pipe = "notification_channel_stream"
-                        await redis_client.publish(channel_pipe, json.dumps(alert_payload))
+                        # await redis_client.publish(channel_pipe, json.dumps(alert_payload))
                         logger.warning(f"Emergency event published to stream '{channel_pipe}' for parent IDs: {parent_ids}")
-                        
-                        # Evict residual metadata out of memory cache
-                        await redis_client.delete(session_key)
+                elif expired_key.startswith("periodic:response:"):
+                    child_id = expired_key.replace("periodic:response:", "")
+
+                    logger.warning(
+                        f"No response received for periodic safety check-in from child {child_id}"
+                    )
+
+                    session_key = f"periodic:session:{child_id}"
+                    retry_key = f"periodic:retry:{child_id}"
+
+                    raw_session = await redis_client.get(session_key)
+
+                    if raw_session:
+
+                        session_data = json.loads(raw_session)
+                        parent_ids = session_data.get("parent_contacts", [])
+
+                        retry_count = await redis_client.get(retry_key)
+
+                        if retry_count is None:
+                            retry_count = 0
+                        else:
+                            retry_count = int(retry_count)
+
+                        if retry_count < 2:
+
+                            await safety_service.retry_checkin(
+                                child_id=child_id,
+                                parent_contacts=parent_ids
+                            )
+
+                        else:
+
+                            await safety_service.handle_no_response(
+                                child_id=child_id,
+                                target_contacts=parent_ids
+                            )
                         
             # Short yield to prevent CPU thread starvation
             await asyncio.sleep(0.1)
