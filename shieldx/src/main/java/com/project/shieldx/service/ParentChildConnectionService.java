@@ -8,10 +8,10 @@ import com.project.shieldx.repository.UserRepo;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -20,6 +20,10 @@ public class ParentChildConnectionService {
 
     private final ParentChildConnectionRepo repo;
     private final UserRepo userRepo;
+    private final RestTemplate restTemplate;
+
+    // FastAPI Notification Microservice Endpoint
+    private static final String NOTIFICATION_SERVICE_URL = "http://10.164.144.193:8001/api/v1/notifications/send";
 
     // 📌 Send request (Only CHILD can send request to PARENT using EMAIL)
     @Transactional
@@ -56,9 +60,62 @@ public class ParentChildConnectionService {
                 .updatedAt(LocalDateTime.now())
                 .build();
 
-        repo.save(connection);
-        System.out.println("✅ [CONN REQUEST] SUCCESS | Pending record saved.");
+        ParentChildConnection savedConnection = repo.save(connection);
+        System.out.println("✅ [CONN REQUEST] SUCCESS | Pending record saved to PostgreSQL.");
+
+        // 🔔 Dispatch Real-Time Push Notification to FastAPI Notification Engine (Port 8001)
+        dispatchPairingNotification(childUser, parentUser, savedConnection.getId().toString());
+
         return "Connection request sent! 🔐";
+    }
+
+    // 📌 Helper Method: Non-blocking Notification Dispatch
+    private void dispatchPairingNotification(User childUser, User parentUser, String connectionId) {
+        try {
+            Map<String, Object> notificationPayload = new HashMap<>();
+
+            // 🆔 1. ADD THIS LINE (Generates UUID for notification_id):
+            notificationPayload.put("notification_id", UUID.randomUUID().toString());
+
+            // Sender Information
+            notificationPayload.put("sender", Map.of(
+                    "id", childUser.getId().toString(),
+                    "type", "USER",
+                    "name", childUser.getName() != null ? childUser.getName() : "Child Device"
+            ));
+
+            // Target Parent Recipient
+            notificationPayload.put("recipients", List.of(Map.of(
+                    "id", parentUser.getId().toString(),
+                    "type", "USER",
+                    "status", "PENDING"
+            )));
+
+            // Alert Content
+            notificationPayload.put("notification", Map.of(
+                    "type", "PAIRING_REQUEST",
+                    "category", "PAIRING",
+                    "priority", "HIGH",
+                    "title", "New Child Pairing Request",
+                    "body", (childUser.getName() != null ? childUser.getName() : "Child") + " requested to connect their device."
+            ));
+
+            // Custom Payload
+            notificationPayload.put("payload", Map.of(
+                    "target_screen", "AcceptInvitationScreen",
+                    "connectionId", connectionId,
+                    "childId", childUser.getId().toString(),
+                    "childName", childUser.getName() != null ? childUser.getName() : "Child",
+                    "pairCode", "SHIELD-" + (1000 + new Random().nextInt(9000))
+            ));
+
+            // Execute HTTP POST to FastAPI
+            restTemplate.postForEntity(NOTIFICATION_SERVICE_URL, notificationPayload, Map.class);
+            System.out.println("🚀 [CONN REQUEST] Dispatch sent to Notification Engine for Parent UUID: " + parentUser.getId());
+
+        } catch (Exception e) {
+            System.err.println("⚠️ [CONN REQUEST] Notification Service dispatch failed: " + e.getMessage());
+        }
     }
 
     // 📌 Respond to request (PARENT accepts / rejects)
@@ -75,8 +132,6 @@ public class ParentChildConnectionService {
         connection.setUpdatedAt(LocalDateTime.now());
         repo.save(connection);
 
-        // NOTE: We no longer manually update loose arrays inside User objects!
-        // The relational link itself represents the source of truth dynamically.
         System.out.println("✅ [CONN RESPOND] SUCCESS | Relationship marked as " + status);
 
         return status == ParentChildConnection.ConnectionStatus.ACCEPTED
@@ -91,7 +146,6 @@ public class ParentChildConnectionService {
         User parent = userRepo.findById(parentId)
                 .orElseThrow(() -> new RuntimeException("Parent user not found"));
 
-        // Query the relational index matrix mapping straight across the parent object filter
         return repo.findByParent(parent)
                 .stream()
                 .map(conn -> ConnectionResponseDTO.builder()
@@ -112,7 +166,6 @@ public class ParentChildConnectionService {
         User child = userRepo.findById(childId)
                 .orElseThrow(() -> new RuntimeException("Child user not found"));
 
-        // Query the relational index matrix mapping straight across the child object filter
         return repo.findByChild(child)
                 .stream()
                 .map(conn -> ConnectionResponseDTO.builder()

@@ -1,9 +1,19 @@
-from pydantic import BaseModel, Field, ConfigDict, UUID4, BeforeValidator, PlainSerializer
-from typing import List, Optional, Any, Dict, Literal, Annotated
+import uuid
 from datetime import datetime, timezone
+from typing import Annotated, Any, Dict, List, Literal, Optional
+
 from bson import ObjectId
+from pydantic import (
+    UUID4,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+)
 
 
+# 📌 ObjectId Validator for MongoDB BSON compatibility
 def validate_object_id(v: Any) -> ObjectId:
     if isinstance(v, ObjectId):
         return v
@@ -15,7 +25,7 @@ def validate_object_id(v: Any) -> ObjectId:
 PyObjectId = Annotated[
     ObjectId,
     BeforeValidator(validate_object_id),
-    PlainSerializer(lambda x: str(x), return_type=str)
+    PlainSerializer(lambda x: str(x), return_type=str),
 ]
 
 
@@ -36,47 +46,33 @@ class DeviceTelemetry(BaseModel):
 
 class Sender(BaseModel):
     id: str
-    type: Literal[
-        "USER",
-        "SERVICE",
-        "SYSTEM",
-        "ADMIN",
-        "AI"
-    ] = "USER"
-
+    type: Literal["USER", "SERVICE", "SYSTEM", "ADMIN", "AI"] = "USER"
     name: Optional[str] = None
 
 
 class Recipient(BaseModel):
     id: str
-    type: Literal[
-        "USER",
-        "GROUP",
-        "DEVICE"
-    ] = "USER"
-
-    status: Literal[
-        "PENDING",
-        "DELIVERED",
-        "FAILED"
-    ] = "PENDING"
+    type: Literal["USER", "GROUP", "DEVICE"] = "USER"
+    status: Literal["PENDING", "DELIVERED", "FAILED"] = "PENDING"
+    read: bool = False
+    read_at: Optional[datetime] = None
 
 
 class NotificationContent(BaseModel):
     type: str
     category: str
-    priority: Literal[
-        "LOW",
-        "NORMAL",
-        "HIGH",
-        "CRITICAL"
-    ] = "NORMAL"
-
+    priority: Literal["LOW", "NORMAL", "HIGH", "CRITICAL"] = "NORMAL"
     title: str
     body: str
 
 
+# 📌 Incoming API Request Payload
 class NotificationRequest(BaseModel):
+    # 🆔 1. ADDED THIS FIELD WITH AUTO-GENERATING DEFAULT
+    notification_id: Optional[str] = Field(
+        default_factory=lambda: str(uuid.uuid4())
+    )
+
     sender: Sender
 
     recipients: List[Recipient]
@@ -110,23 +106,14 @@ class Parent(BaseModel):
     last_seen: Optional[datetime] = None
 
     model_config = ConfigDict(
-        populate_by_name=True,
-        arbitrary_types_allowed=True
+        populate_by_name=True, arbitrary_types_allowed=True
     )
 
 
 class DeliveryAttempt(BaseModel):
-    channel: Literal[
-        "REDIS_PUBSUB",
-        "FCM_PUSH",
-        "TWILIO_SMS"
-    ]
+    channel: Literal["REDIS_PUBSUB", "FCM_PUSH", "TWILIO_SMS"]
 
-    result: Literal[
-        "SUCCESS",
-        "FAILED_TRANSIENT",
-        "FAILED_PERMANENT"
-    ]
+    result: Literal["SUCCESS", "FAILED_TRANSIENT", "FAILED_PERMANENT"]
 
     attempt_number: int
 
@@ -137,10 +124,11 @@ class DeliveryAttempt(BaseModel):
     )
 
 
+# 📌 Persistent Database Record Schema (MongoDB)
 class NotificationDocument(BaseModel):
     id: Optional[PyObjectId] = Field(alias="_id", default=None)
 
-    notification_id: UUID4
+    notification_id: str
 
     sender: Sender
 
@@ -159,23 +147,15 @@ class NotificationDocument(BaseModel):
     delivered: bool = False
 
     delivered_via: Optional[
-        Literal[
-            "REDIS_PUBSUB",
-            "FCM_PUSH",
-            "TWILIO_SMS"
-        ]
+        Literal["REDIS_PUBSUB", "FCM_PUSH", "TWILIO_SMS"]
     ] = None
 
     final_status: Literal[
-        "PENDING",
-        "PROCESSING",
-        "COMPLETED",
-        "FAILED"
+        "PENDING", "PROCESSING", "COMPLETED", "FAILED"
     ] = "PENDING"
 
     status_history: List[DeliveryAttempt] = Field(default_factory=list)
 
     model_config = ConfigDict(
-        populate_by_name=True,
-        arbitrary_types_allowed=True
+        populate_by_name=True, arbitrary_types_allowed=True
     )

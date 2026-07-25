@@ -1,13 +1,15 @@
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from config import settings
 
+
 logger = logging.getLogger("ShieldX.DB")
+
 
 client: Optional[AsyncIOMotorClient] = None
 db = None
@@ -17,70 +19,94 @@ async def init_db():
     global client, db
 
     if client is None:
-        client = AsyncIOMotorClient(settings.MONGO_URI)
+        client = AsyncIOMotorClient(
+            settings.MONGO_URI
+        )
         db = client[settings.DB_NAME]
         await ensure_indexes()
+        logger.info(
+            "MongoDB initialized"
+        )
 
     return db
 
 
-async def ensure_indexes():
-    try:
-        await db.notifications.create_index(
-            [("notification_id", 1)],
-            unique=True
-        )
-
-        await db.notifications.create_index(
-            [("created_at", -1)]
-        )
-
-        await db.notifications.create_index(
-            [("notification.type", 1)]
-        )
-
-        await db.notifications.create_index(
-            [("notification.category", 1)]
-        )
-
-        await db.notifications.create_index(
-            [("notification.priority", 1)]
-        )
-
-        await db.notifications.create_index(
-            [("sender.id", 1)]
-        )
-
-        await db.notifications.create_index(
-            [("recipients.id", 1)]
-        )
-
-        await db.notifications.create_index(
-            [("location_geo", "2dsphere")]
-        )
-
-        logger.info("Notification indexes created successfully.")
-
-    except Exception as e:
-        logger.error(f"Index creation failed: {e}")
-
-
-async def insert_notification(document: Dict[str, Any]) -> str:
+def get_notifications_collection():
     if db is None:
-        raise ConnectionError("Database not initialized.")
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+    return db.notifications
+
+
+async def ensure_indexes():
+    notification_coll = get_notifications_collection()
+    
+    await notification_coll.create_index(
+        [("notification_id", 1)],
+        unique=True
+    )
+
+    await notification_coll.create_index(
+        [("created_at", -1)]
+    )
+
+    await notification_coll.create_index(
+        [("recipients.id", 1)]
+    )
+
+
+async def get_user_notifications(
+    user_id: str,
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    notification_coll = get_notifications_collection()
+
+    cursor = notification_coll.find(
+        {
+            "$or": [
+                {"recipient_id": user_id},
+                {"recipients.id": user_id}
+            ]
+        }
+    ).sort(
+        "created_at",
+        -1
+    ).limit(limit)
+
+    notifications = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        notifications.append(doc)
+
+    return notifications
+
+
+async def insert_notification(
+    document: Dict[str, Any]
+) -> str:
+    notification_coll = get_notifications_collection()
 
     document["_id"] = ObjectId()
-    document["created_at"] = datetime.now(timezone.utc)
-    document.setdefault("status_history", [])
 
-    await db.notifications.insert_one(document)
+    document["created_at"] = datetime.now(
+        timezone.utc
+    )
+
+    document.setdefault(
+        "status_history",
+        []
+    )
+
+    await notification_coll.insert_one(
+        document
+    )
 
     return str(document["_id"])
 
 
-async def get_notification(notification_id: str) -> Optional[Dict[str, Any]]:
-    if db is None:
-        raise ConnectionError("Database not initialized.")
+async def get_notification(
+    notification_id: str
+):
+    notification_coll = get_notifications_collection()
 
     obj_id = (
         ObjectId(notification_id)
@@ -88,7 +114,7 @@ async def get_notification(notification_id: str) -> Optional[Dict[str, Any]]:
         else notification_id
     )
 
-    return await db.notifications.find_one(
+    return await notification_coll.find_one(
         {
             "_id": obj_id
         }
@@ -98,11 +124,9 @@ async def get_notification(notification_id: str) -> Optional[Dict[str, Any]]:
 async def update_notification_status(
     notification_id: str,
     update_data: Dict[str, Any],
-    delivery_attempt: Optional[Dict[str, Any]] = None
-) -> bool:
-
-    if db is None:
-        raise ConnectionError("Database not initialized.")
+    delivery_attempt=None
+):
+    notification_coll = get_notifications_collection()
 
     obj_id = (
         ObjectId(notification_id)
@@ -120,7 +144,7 @@ async def update_notification_status(
             "status_history": delivery_attempt
         }
 
-    result = await db.notifications.update_one(
+    result = await notification_coll.update_one(
         {
             "_id": obj_id
         },

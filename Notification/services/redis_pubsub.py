@@ -127,3 +127,11 @@ class RedisPubSubService:
                 f"Redis publish failed for user {user_id}: {e}"
             )
             return False
+
+
+# 🔌 Functional Module Exports for Direct Route/Worker Imports
+get_user_channel = RedisPubSubService.get_user_channel
+get_presence_key = RedisPubSubService.get_presence_key
+track_heartbeat = RedisPubSubService.track_heartbeat
+get_user_reachability = RedisPubSubService.get_user_reachability
+publish_to_user = RedisPubSubService.publish_to_user

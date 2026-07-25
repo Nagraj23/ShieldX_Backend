@@ -1,23 +1,25 @@
 import logging
 
-from rq.exceptions import Retry
+from rq import Retry
 
 from config import settings
 from db import (
     get_notification,
     update_notification_status,
 )
+from db import init_db
 from services.redis_pubsub import RedisPubSubService
-from fcm import FallbackNotificationService
+from services.fcm import FallbackNotificationService
 from models.notification_model import DeliveryAttempt
 
 logger = logging.getLogger("ShieldX.Worker")
 
 
 async def execute_delivery(notification_id: str):
-
+    await init_db()
     notification = await get_notification(notification_id)
 
+    
     if not notification:
         return {"status": "NOT_FOUND"}
 
