@@ -7,7 +7,7 @@ import java.util.Date;
 
 @Component
 public class JWTutil {
-    private final String SECRET_KEY = "your_secret_key_here";
+    private final String SECRET_KEY = "fcac35f0013bd448bd10a736ef73a6e125aa9d585aef1bc01a01b210c9ddefb2";
     private final long EXPIRATION_TIME = 86400000; // 1 day
 
     public String generateToken(String email) {

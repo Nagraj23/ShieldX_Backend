@@ -23,7 +23,7 @@ public class ParentChildConnectionService {
     private final RestTemplate restTemplate;
 
     // FastAPI Notification Microservice Endpoint
-    private static final String NOTIFICATION_SERVICE_URL = "http://10.164.144.193:8001/api/v1/notifications/send";
+    private static final String NOTIFICATION_SERVICE_URL = "http://10.164.144.154:8001/api/v1/notifications/send";
 
     // 📌 Send request (Only CHILD can send request to PARENT using EMAIL)
     @Transactional
