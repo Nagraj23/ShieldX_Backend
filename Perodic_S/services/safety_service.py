@@ -1,6 +1,5 @@
 import json
 import logging
-import random
 from typing import Dict, Any, List
 from passlib.context import CryptContext
 from config.redis_config import get_redis_client
@@ -25,7 +24,6 @@ class SafetyService:
         timer_key = f"periodic:timer:{child_id}"
         
         interval_minutes = 1  
-
         ttl_seconds = interval_minutes * 60
 
         session_data = {
@@ -144,12 +142,14 @@ class SafetyService:
         response_timer_key = f"periodic:response:{child_id}"
         await self.redis_client.setex(response_timer_key, 30, "WAITING_FOR_RESPONSE")
 
+        # Event payload published to Redis channel for UI and notification services to catch
         checkin_payload = {
             "event": "PERIODIC_CHECKIN",
+            "type": "SAFETY_CHALLENGE",
             "child_id": child_id,
-            "recipients": session_data["parent_contacts"],
-            "title": "ShieldX Safety Check",
-            "message": "Are you safe? Please enter your safety code within 30 seconds."
+            "recipients": [child_id],
+            "title": "🛡️ ShieldX Safety Check",
+            "message": "Are you safe? Tap here to enter your safety code within 30 seconds."
         }
 
         await self.redis_client.publish("notification_channel_stream", json.dumps(checkin_payload))
