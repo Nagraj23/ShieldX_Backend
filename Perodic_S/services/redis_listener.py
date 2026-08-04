@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from config.redis_config import get_redis_client
 from services.safety_service import SafetyService
@@ -7,64 +6,102 @@ from services.safety_service import SafetyService
 logger = logging.getLogger("redis_listener")
 safety_service = SafetyService()
 
+RESPONSE_TIMEOUT = 60  # 1 minute window for response
+MAX_RETRIES = 3        # Configurable: retry 3 to 5 times before parent SOS
+
 async def listen_to_timer_expirations():
     redis_client = get_redis_client()
     pubsub = redis_client.pubsub()
-    
-    expiration_channel = "__keyevent@0__:expired"
-    await pubsub.subscribe(expiration_channel)
-    
-    logger.info(f"Asynchronous Redis Keyspace Listener actively polling: {expiration_channel}")
-    
+    channel = "__keyevent@0__:expired"
+
+    await pubsub.subscribe(channel)
+    logger.info(f"🟢 [Redis Listener] Subscribed to keyspace expiry channel: {channel}")
+
     try:
         while True:
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=1
+            )
+
             if message:
-                expired_key = message['data']
-                
-                # 1. Main Periodic Timer Expired (e.g., after 1 min test)
+                expired_key = message["data"]
+
+                if isinstance(expired_key, bytes):
+                    expired_key = expired_key.decode()
+
                 if expired_key.startswith("periodic:timer:"):
                     child_id = expired_key.replace("periodic:timer:", "")
-                    logger.error(f"🔴 DEAD-MAN'S SWITCH: Child {child_id} missed their safety check-in!")
-                    
-                    # This method inside SafetyService sets status to CHALLENGED 
-                    # and publishes to Redis channel "notification_channel_stream"
-                    await safety_service.send_checkin_request(child_id=child_id)
-                    
-                    response_timer_key = f"periodic:response:{child_id}"
-                    retry_key = f"periodic:retry:{child_id}"
+                    session_key = f"periodic:session:{child_id}"
+                    response_key = f"periodic:response:{child_id}"
 
-                    await redis_client.set(retry_key, 0)
-                    await redis_client.setex(response_timer_key, 30, "WAITING_FOR_RESPONSE")
-                    
-                # 2. 30-Second Response Window Expired
+                    if not await redis_client.exists(session_key):
+                        continue
+
+                    # Trigger single check-in alert
+                    await safety_service.send_checkin_request(child_id)
+
+                    # Start the 1-minute response grace period window
+                    await redis_client.setex(
+                        response_key,
+                        RESPONSE_TIMEOUT,
+                        "WAITING"
+                    )
+
+                    logger.warning(f"⚠️ [Check-In Sent] Initial alert sent for child {child_id}")
+
+                # ==========================================
+                # 2. RESPONSE WINDOW EXPIRED (Handle Retry / SOS)
+                # ==========================================
                 elif expired_key.startswith("periodic:response:"):
                     child_id = expired_key.replace("periodic:response:", "")
-                    logger.warning(f"No response received for periodic safety check-in from child {child_id}")
-
                     session_key = f"periodic:session:{child_id}"
                     retry_key = f"periodic:retry:{child_id}"
+                    response_key = f"periodic:response:{child_id}"
 
-                    raw_session = await redis_client.get(session_key)
+                    # If session was stopped or redeemed (user entered pin), ignore expiration
+                    if not await redis_client.exists(session_key):
+                        await redis_client.delete(retry_key)
+                        continue
 
-                    if raw_session:
-                        retry_count = await redis_client.get(retry_key)
-                        retry_count = int(retry_count) if retry_count else 0
+                    retry = await redis_client.get(retry_key)
+                    retry = int(retry or 0)
 
-                        if retry_count < 2:
-                            await redis_client.incr(retry_key)
-                            await safety_service.send_checkin_request(child_id=child_id)
-                            await redis_client.setex(f"periodic:response:{child_id}", 30, "WAITING_FOR_RESPONSE")
-                        else:
-                            # Final failure: Trigger SOS Emergency Alert via Redis publish
-                            await safety_service.handle_no_response(child_id=child_id)
-                            await redis_client.delete(session_key, f"periodic:response:{child_id}", retry_key)
-                        
+                    if retry < MAX_RETRIES:
+                        # Increment retry count
+                        new_retry_count = retry + 1
+                        await redis_client.set(retry_key, new_retry_count)
+
+                        # Resend ONLY ONE check-in alert
+                        await safety_service.send_checkin_request(child_id)
+
+                        # Reset the 1-minute response timer for the next attempt
+                        await redis_client.setex(
+                            response_key,
+                            RESPONSE_TIMEOUT,
+                            "WAITING"
+                        )
+
+                        logger.warning(f"🔄 [Retry Sent] Attempt {new_retry_count}/{MAX_RETRIES} sent for child {child_id}")
+
+                    else:
+                        # Max retries exhausted! Finalize and trigger Parent SOS alert
+                        await safety_service.handle_no_response(child_id)
+
+                        await redis_client.delete(
+                            session_key,
+                            retry_key,
+                            response_key
+                        )
+
+                        logger.error(f"🚨 [SOS Triggered] Child {child_id} failed to respond after {MAX_RETRIES} retries. Parents alerted.")
+
             await asyncio.sleep(0.1)
-            
+
     except Exception as e:
-        logger.error(f"Critical error inside background layer: {str(e)}")
+        logger.exception(f"❌ Redis keyspace listener crashed: {e}")
+
     finally:
-        await pubsub.unsubscribe(expiration_channel)
+        await pubsub.unsubscribe(channel)
+        await pubsub.close()
         await redis_client.close()

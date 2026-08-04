@@ -117,6 +117,10 @@ class RedisPubSubService:
             )
 
             logger.info(
+    f"📤 Publishing ONCE -> user={user_id} channel={channel}"
+)
+            
+            logger.info(
                 f"Notification published to user {user_id}"
             )
 

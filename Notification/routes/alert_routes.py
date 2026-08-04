@@ -61,19 +61,29 @@ ws_router = APIRouter()
 
 @ws_router.websocket("/ws/notifications/{user_id}")
 async def notification_websocket(websocket: WebSocket, user_id: str):
-    # 🚨 CRITICAL: Accept handshake FIRST to prevent 403 Forbidden
-    await websocket.accept()
-    logger.info(f"⚡ [WebSocket Connected] User: {user_id}")
 
-    pubsub = redis_client.pubsub()
+    await websocket.accept()
+
+    logger.info(
+        f"⚡ [WebSocket Connected] User: {user_id}"
+    )
+
+    pubsub = None
     channel_name = get_user_channel(user_id)
-    await pubsub.subscribe(channel_name)
 
     try:
+        pubsub = redis_client.pubsub()
+
+        await pubsub.subscribe(channel_name)
+
         while True:
-            # Poll for Redis PubSub messages for this user channel
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if message and message['type'] == 'message':
+
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=1.0
+            )
+
+            if message and message["type"] == "message":
 
                 data = message["data"]
 
@@ -81,15 +91,41 @@ async def notification_websocket(websocket: WebSocket, user_id: str):
                     data = data.decode("utf-8")
 
                 await websocket.send_text(data)
+
             await asyncio.sleep(0.1)
 
-    except WebSocketDisconnect:
-        logger.info(f"🔌 [WebSocket Disconnected] User: {user_id}")
-        await pubsub.unsubscribe(channel_name)
-    except Exception as e:
-        logger.error(f"WebSocket Error for user {user_id}: {str(e)}")
-        await pubsub.unsubscribe(channel_name)
 
+    except WebSocketDisconnect:
+
+        logger.info(
+            f"🔌 [WebSocket Disconnected] User: {user_id}"
+        )
+
+
+    except Exception as e:
+
+        logger.error(
+            f"❌ WebSocket Error {user_id}: {e}"
+        )
+
+
+    finally:
+
+        if pubsub:
+
+            try:
+                await pubsub.unsubscribe(channel_name)
+                await pubsub.close()
+
+                logger.info(
+                    f"🧹 Redis PubSub cleaned: {user_id}"
+                )
+
+            except Exception as e:
+
+                logger.error(
+                    f"Redis cleanup failed: {e}"
+                )
 
 # 📌 3. Submit Notification Dispatch Endpoint
 @router.post("/send", status_code=status.HTTP_202_ACCEPTED)
